@@ -1,0 +1,547 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Adaptive Urban Guide: Sensory</title>
+    
+    <!-- TensorFlow.js -->
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.10.0/dist/tf.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd@2.2.3/dist/coco-ssd.min.js"></script>
+
+    <style>
+        /* CORE STYLES */
+        body { margin: 0; background: #000; color: #0f0; font-family: 'Consolas', monospace; overflow: hidden; user-select: none; }
+        
+        /* APP CONTAINER */
+        #app-container { position: absolute; top: 0; left: 0; width: 100%; height: 100%; display: flex; flex-direction: column; }
+        
+        /* TABS */
+        #tab-bar { display: flex; height: 60px; background: #111; border-bottom: 2px solid #004400; z-index: 100; }
+        .tab { flex: 1; display: flex; justify-content: center; align-items: center; font-size: 16px; font-weight: bold; color: #666; cursor: pointer; background: #000; }
+        .tab.active { background: #002200; color: #0f0; border-bottom: 4px solid #0f0; }
+        
+        /* VIEWS */
+        .view { flex: 1; position: relative; display: none; overflow: hidden; }
+        .view.active { display: block; }
+
+        /* CAMERA LAYOUT */
+        #camera-view { width: 100%; height: 100%; object-fit: cover; }
+        #overlay { position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; }
+        #flash-overlay { position: absolute; top: 0; left: 0; width: 100%; height: 100%; background: red; opacity: 0; pointer-events: none; transition: opacity 0.1s; }
+        
+        /* HUD */
+        #hud { 
+            position: absolute; bottom: 0; left: 0; width: 100%; 
+            background: linear-gradient(to top, rgba(0,0,0,0.95), transparent);
+            padding: 20px; box-sizing: border-box; pointer-events: none;
+        }
+        #main-alert { font-size: 40px; font-weight: 900; text-align: center; margin: 10px 0; text-transform: uppercase; letter-spacing: 2px; text-shadow: 0 0 10px currentColor; }
+        
+        /* CONTROLS */
+        .controls { position: absolute; top: 20px; right: 20px; display: flex; flex-direction: column; gap: 15px; pointer-events: auto; }
+        .ctrl-btn { width: 60px; height: 60px; border-radius: 12px; background: rgba(0, 20, 0, 0.8); border: 2px solid #0f0; color: #0f0; font-size: 28px; display: flex; justify-content: center; align-items: center; cursor: pointer; transition: all 0.2s; }
+        .ctrl-btn.active { background: #0f0; color: #000; box-shadow: 0 0 15px #0f0; }
+        .ctrl-btn.listening { background: #ff0000; color: #fff; box-shadow: 0 0 15px #ff0000; border-color: #ff0000; animation: pulse 1s infinite; }
+
+        @keyframes pulse { 0% { transform: scale(1); } 50% { transform: scale(1.1); } 100% { transform: scale(1); } }
+
+        /* TRAINER VIEW */
+        #trainer-view { padding: 20px; overflow-y: auto; background: #0a0a0a; }
+        .param-group { margin-bottom: 20px; background: #111; padding: 15px; border: 1px solid #333; border-radius: 8px; }
+        .param-label { display: flex; justify-content: space-between; margin-bottom: 10px; font-size: 16px; color: #aaa; }
+        .param-val { color: #0ff; font-weight: bold; }
+        input[type=range] { width: 100%; accent-color: #0f0; height: 30px; }
+        .train-btn { width: 100%; padding: 20px; background: #003300; border: 2px solid #0f0; color: #0f0; font-size: 20px; font-weight: bold; cursor: pointer; text-transform: uppercase; margin-top: 10px; border-radius: 8px; }
+        .train-btn:active { background: #0f0; color: #000; }
+        .train-btn:disabled { border-color: #555; color: #555; background: #222; }
+        #training-log { height: 150px; background: #000; border: 1px solid #333; margin-top: 20px; padding: 10px; font-size: 12px; color: #888; overflow-y: auto; font-family: monospace; white-space: pre-wrap; }
+        #progress-container { width: 100%; background: #222; height: 8px; margin-top: 15px; border-radius: 4px; overflow:hidden; }
+        #progress-bar { width: 0%; height: 100%; background: #0f0; transition: width 0.1s; }
+
+        /* VECTOR PANEL */
+        .vector-panel { background: rgba(0, 20, 0, 0.8); border: 2px solid #005500; padding: 10px; font-size: 12px; color: #0ff; font-family: monospace; margin-top: 10px; border-radius: 8px; }
+        .vector-row { display: flex; justify-content: space-between; margin-bottom: 4px; }
+        .vec-label { color: #00aa00; font-weight: bold; }
+
+    </style>
+</head>
+<body>
+
+    <div id="app-container">
+        <!-- TAB BAR -->
+        <div id="tab-bar">
+            <div class="tab active" onclick="switchTab('camera')">VISION</div>
+            <div class="tab" onclick="switchTab('trainer')">RL POLICY</div>
+        </div>
+
+        <!-- VIEW 1: CAMERA -->
+        <div id="camera-view-container" class="view active">
+            <video id="camera-feed" autoplay playsinline muted></video>
+            <canvas id="overlay"></canvas>
+            <div id="flash-overlay"></div>
+            
+            <div class="controls">
+                <div class="ctrl-btn" onclick="toggleContrast()" title="High Contrast">👁️</div>
+                <div class="ctrl-btn" onclick="toggleTorch()" title="Flashlight">🔦</div>
+                <div class="ctrl-btn active" id="btn-sonar" onclick="toggleSonar()" title="Sonar Sound">🔊</div>
+                <div class="ctrl-btn" id="btn-mic" onclick="toggleVoiceSearch()" title="Voice Search">🎤</div>
+            </div>
+
+            <div id="hud">
+                <div style="display: flex; justify-content: space-between; font-size: 14px; font-weight: bold; margin-bottom: 5px;">
+                    <span>RISK: <span id="hud-risk" style="color:cyan">LOW</span></span>
+                    <span>FPS: <span id="fps-meter">0</span></span>
+                </div>
+                <div id="main-alert">Scanning</div>
+                
+                <div class="vector-panel">
+                    <div style="border-bottom: 1px solid #004400; margin-bottom: 5px; font-weight: bold;">LIVE TRACKING</div>
+                    <div class="vector-row"><span class="vec-label">DISTANCE (Area):</span> <span id="val-dist">0.00</span></div>
+                    <div class="vector-row"><span class="vec-label">VELOCITY (Rate):</span> <span id="val-vel">0.00</span></div>
+                    <div class="vector-row"><span class="vec-label">TTC (Impact):</span> <span id="val-ttc">--</span></div>
+                    <div class="vector-row"><span class="vec-label">OBJECT:</span> <span id="val-cls">NONE</span></div>
+                    <div class="vector-row"><span class="vec-label">TARGET:</span> <span id="val-target" style="color:yellow">ANY</span></div>
+                </div>
+            </div>
+        </div>
+
+        <!-- VIEW 2: TRAINER -->
+        <div id="trainer-view" class="view">
+            <h2 style="margin-top:0; border-bottom:1px solid #333; padding-bottom:10px;">VELOCITY POLICY CONFIG</h2>
+            
+            <div class="param-group">
+                <div class="param-label"><span>Reaction Sensitivity</span> <span id="val-speed" class="param-val">1.4</span></div>
+                <input type="range" min="0.5" max="3.0" step="0.1" value="1.4" oninput="updateParam('speed', this.value)">
+                <div style="font-size:10px; color:#666; margin-top:5px;">Higher = React faster to moving objects.</div>
+            </div>
+
+            <div class="param-group">
+                <div class="param-label"><span>Static Safety Buffer</span> <span id="val-buffer" class="param-val">1.2 m</span></div>
+                <input type="range" min="0.5" max="3.0" step="0.1" value="1.2" oninput="updateParam('buffer', this.value)">
+                <div style="font-size:10px; color:#666; margin-top:5px;">Minimum distance for stationary objects.</div>
+            </div>
+
+            <div class="param-group">
+                <div class="param-label"><span>Haptic Intensity</span> <span id="val-priority" class="param-val">2.0</span></div>
+                <input type="range" min="1.0" max="5.0" step="0.1" value="2.0" oninput="updateParam('priority', this.value)">
+            </div>
+
+            <button id="train-btn" class="train-btn" onclick="startEdgeTraining()">OPTIMIZE POLICY</button>
+            <div id="progress-container"><div id="progress-bar"></div></div>
+            <div id="training-log">> Policy Engine Ready...</div>
+        </div>
+    </div>
+
+    <script>
+        // --- GLOBAL STATE ---
+        let video, canvas, ctx, streamTrack, model;
+        let isRunning = false, lastFrameTime = 0;
+        let torchEnabled = false, highContrast = false, sonarEnabled = true;
+        let recognition, isListening = false;
+        let targetObject = null;
+        let audioCtx, nextClickTime = 0;
+        
+        // --- TRACKING STATE (Velocity) ---
+        let trackedObj = { id: null, area: 0, timestamp: 0 };
+        let pathTargetX = 0.5; // Normalized target X for path (0.5 is center)
+        
+        // --- RL POLICY PARAMS ---
+        let policy = {
+            sensitivity: 1.4, // Speed multiplier
+            safetyBuffer: 1.2,
+            priority: 2.0,    // Haptic multiplier
+            episodes: 100,
+            threshold: 0.40
+        };
+
+        // --- INIT ---
+        window.onload = async () => {
+            switchTab('camera');
+            setTimeout(initAI, 500);
+        };
+
+        async function initAI() {
+            try {
+                await tf.setBackend('webgl');
+                await tf.ready();
+                model = await cocoSsd.load();
+                console.log("AI Loaded.");
+                startCamera();
+            } catch(e) { alert("Init Error: " + e.message); }
+        }
+
+        async function startCamera() {
+            try {
+                // Init Audio for Sonar
+                const AC = window.AudioContext || window.webkitAudioContext;
+                audioCtx = new AC();
+                setupVoiceRec();
+                
+                const stream = await navigator.mediaDevices.getUserMedia({
+                    video: { facingMode: 'environment', width: {ideal: 1280}, height: {ideal: 720} },
+                    audio: false
+                });
+                video = document.getElementById('camera-feed');
+                canvas = document.getElementById('overlay');
+                ctx = canvas.getContext('2d');
+                
+                video.srcObject = stream;
+                streamTrack = stream.getVideoTracks()[0];
+                video.play();
+                
+                video.onloadedmetadata = () => {
+                    canvas.width = video.videoWidth; 
+                    canvas.height = video.videoHeight;
+                    isRunning = true;
+                    smartSpeak("System Online.");
+                    predictLoop();
+                };
+            } catch(e) { console.error(e); }
+        }
+
+        // --- AI LOOP ---
+        async function predictLoop() {
+            if(!isRunning || document.hidden) { requestAnimationFrame(predictLoop); return; }
+            
+            const now = performance.now();
+            document.getElementById('fps-meter').innerText = Math.round(1000/(now-lastFrameTime));
+            lastFrameTime = now;
+
+            if(model && video.readyState === 4) {
+                if(canvas.width !== video.videoWidth) { 
+                    canvas.width = video.videoWidth; canvas.height = video.videoHeight; 
+                }
+                const predictions = await model.detect(video);
+                ctx.clearRect(0,0,canvas.width,canvas.height);
+                processDetections(predictions);
+            }
+            requestAnimationFrame(predictLoop);
+        }
+
+        // --- VELOCITY & RISK LOGIC ---
+        function processDetections(preds) {
+            let critical = null;
+            let maxArea = 0;
+            
+            // 1. Identify Critical Object
+            preds.forEach(p => {
+                if (targetObject && !p.class.toLowerCase().includes(targetObject)) return;
+
+                if(p.score > policy.threshold) {
+                    const [x,y,w,h] = p.bbox;
+                    const area = (w*h)/(canvas.width*canvas.height); // 0.0 to 1.0
+                    
+                    // Box Drawing
+                    const boxColor = highContrast ? "#FFD700" : (targetObject ? "#00FFFF" : "rgba(0,255,0,0.6)");
+                    ctx.strokeStyle = boxColor;
+                    ctx.lineWidth = highContrast ? 4 : 2;
+                    ctx.strokeRect(x,y,w,h);
+
+                    if(area > maxArea) {
+                        critical = p;
+                        maxArea = area;
+                    }
+                }
+            });
+
+            // 2. Dynamics & Feedback
+            let deviation = 0; // 0 = Clear, -1 = Left, 1 = Right
+
+            if(critical) {
+                const now = Date.now();
+                const dt = (now - trackedObj.timestamp) / 1000;
+                let velocity = 0;
+                
+                // Calc Velocity
+                if(trackedObj.id === critical.class && dt > 0 && dt < 1.0) {
+                    velocity = (maxArea - trackedObj.area) / dt;
+                }
+                trackedObj = { id: critical.class, area: maxArea, timestamp: now };
+                
+                // Calculate Deviation for Guide Way
+                const [x,y,w,h] = critical.bbox;
+                const centerX = x + (w/2);
+                // Normalized position: 0 (Left) to 1 (Right)
+                const normX = centerX / canvas.width;
+                // If object is on Left (normX < 0.5), Deviation is Negative.
+                deviation = (normX - 0.5) * 2; // -1 to 1
+
+                // 3. Risk Calculation (RL Logic)
+                const dynamicRisk = maxArea + (Math.max(0, velocity) * policy.sensitivity);
+                
+                let ttc = "Inf";
+                if(velocity > 0.05) {
+                    const timeSec = (1.0 - maxArea) / velocity;
+                    ttc = timeSec.toFixed(1) + "s";
+                }
+
+                updateStats(maxArea, velocity, ttc, critical.class);
+                
+                // 4. Feedback Decision
+                const baseThreshold = 0.4 / policy.safetyBuffer;
+
+                if (targetObject) {
+                    updateHUD("FOUND " + targetObject.toUpperCase(), "#00FFFF");
+                    playSonar(maxArea * 2); 
+                }
+                else if (dynamicRisk > (baseThreshold * 1.5)) {
+                    // STOP CONDITION
+                    updateHUD("STOP", "#f00");
+                    ctx.strokeStyle = "red"; ctx.lineWidth = 8; ctx.strokeRect(x,y,w,h);
+                    document.getElementById('flash-overlay').style.opacity = 0.5;
+                    
+                    if(navigator.vibrate) navigator.vibrate(500 * policy.priority); 
+                    smartSpeak("Stop");
+                    playSonar(dynamicRisk * 3);
+                } 
+                else if (dynamicRisk > baseThreshold) {
+                    // WARN CONDITION
+                    updateHUD("SLOW DOWN", "#fa0");
+                    ctx.strokeStyle = "orange"; ctx.lineWidth = 4; ctx.strokeRect(x,y,w,h);
+                    document.getElementById('flash-overlay').style.opacity = 0;
+                    
+                    if(navigator.vibrate) navigator.vibrate(100); 
+                    playSonar(dynamicRisk);
+                } 
+                else {
+                    updateHUD("WALK", "#0f0");
+                    document.getElementById('flash-overlay').style.opacity = 0;
+                }
+
+            } else {
+                updateHUD(targetObject ? "SEARCHING..." : "CLEAR", "#0f0");
+                updateStats(0, 0, "--", "NONE");
+                document.getElementById('flash-overlay').style.opacity = 0;
+                if(Date.now() - trackedObj.timestamp > 1000) trackedObj.area = 0; 
+                deviation = 0; // Clear path
+            }
+
+            // DRAW GUIDE WAY (Virtual Sidewalk)
+            drawGuidePath(deviation);
+        }
+
+        // --- AR GUIDE WAY ---
+        function drawGuidePath(obstacleDeviation) {
+            // obstacleDeviation: -1 (Left) to 1 (Right). 0 = Clear.
+            // If obstacle is Left (-1), Path should curve Right.
+            
+            const w = canvas.width;
+            const h = canvas.height;
+            
+            // Smooth target transition
+            // If dev < 0 (Obstacle Left), Target > 0.5 (Right)
+            let targetXNorm = 0.5; 
+            if (Math.abs(obstacleDeviation) > 0.1) {
+                targetXNorm = obstacleDeviation < 0 ? 0.8 : 0.2;
+            } else {
+                targetXNorm = 0.5;
+            }
+            
+            // Lerp for smooth animation
+            pathTargetX = (pathTargetX * 0.9) + (targetXNorm * 0.1);
+            
+            const startX = w / 2;
+            const startY = h;
+            const endX = pathTargetX * w;
+            const endY = h * 0.3; // Horizon line
+            
+            // Bezier Control Point
+            const cpX = (startX + endX) / 2; 
+            const cpY = h * 0.8;
+
+            ctx.beginPath();
+            // Draw floor shape
+            ctx.moveTo(startX - (w*0.3), startY); // Bottom Left
+            ctx.quadraticCurveTo(cpX - (w*0.1), cpY, endX - (w*0.05), endY); // Curve to top left
+            ctx.lineTo(endX + (w*0.05), endY); // Top Right
+            ctx.quadraticCurveTo(cpX + (w*0.1), cpY, startX + (w*0.3), startY); // Curve to bottom right
+            ctx.closePath();
+            
+            // Style
+            const grad = ctx.createLinearGradient(0, endY, 0, startY);
+            grad.addColorStop(0, "rgba(0, 255, 0, 0.1)");
+            grad.addColorStop(1, "rgba(0, 255, 0, 0.4)");
+            ctx.fillStyle = grad;
+            ctx.fill();
+            
+            // Dashed Center Line
+            ctx.beginPath();
+            ctx.moveTo(startX, startY);
+            ctx.quadraticCurveTo(cpX, cpY, endX, endY);
+            ctx.strokeStyle = "rgba(100, 255, 100, 0.8)";
+            ctx.lineWidth = 4;
+            ctx.setLineDash([20, 15]);
+            ctx.stroke();
+            ctx.setLineDash([]);
+        }
+
+        // --- SENSORY FEEDBACK ---
+        
+        function playSonar(intensity) {
+            if(!sonarEnabled || !audioCtx) return;
+            const delay = Math.max(50, 800 - (intensity * 1000));
+            
+            if(Date.now() > nextClickTime) {
+                const osc = audioCtx.createOscillator(); 
+                const gain = audioCtx.createGain();
+                osc.connect(gain); gain.connect(audioCtx.destination);
+                osc.type = 'square'; 
+                osc.frequency.value = 400 + (intensity * 600);
+                gain.gain.setValueAtTime(0.1, audioCtx.currentTime);
+                gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.05);
+                osc.start(); osc.stop(audioCtx.currentTime + 0.05);
+                nextClickTime = Date.now() + delay;
+            }
+        }
+
+        let lastSpeech = 0;
+        function smartSpeak(text) {
+            const now = Date.now();
+            if (now - lastSpeech > 3000 || text === "Stop") {
+                const u = new SpeechSynthesisUtterance(text);
+                u.rate = 1.3;
+                window.speechSynthesis.speak(u);
+                lastSpeech = now;
+            }
+        }
+
+        // --- LOCAL VOICE SEARCH (Offline) ---
+        function setupVoiceRec() {
+            const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+            if (!SR) return;
+            recognition = new SR(); 
+            recognition.lang = 'en-US';
+            recognition.continuous = false; // We toggle manually
+            
+            recognition.onstart = () => { 
+                isListening = true; 
+                document.getElementById('btn-mic').classList.add('listening');
+                updateHUD("LISTENING...", "cyan"); 
+            };
+            
+            recognition.onend = () => { 
+                isListening = false; 
+                document.getElementById('btn-mic').classList.remove('listening');
+            };
+
+            recognition.onresult = (e) => { 
+                const t = e.results[0][0].transcript.toLowerCase();
+                processLocalIntent(t);
+            };
+        }
+
+        function processLocalIntent(text) {
+            if(text.includes("reset") || text.includes("stop")) {
+                resetToSafetyMode();
+                return;
+            }
+
+            const classes = ["person", "bicycle", "car", "bus", "truck", "traffic light", "fire hydrant", "stop sign", "bench", "bird", "cat", "dog", "bottle", "chair", "couch", "potted plant", "tv", "laptop", "cell phone"];
+            const found = classes.find(c => text.includes(c));
+            
+            if(found) {
+                targetObject = found;
+                document.getElementById('val-target').innerText = found.toUpperCase();
+                smartSpeak("Looking for " + found);
+                updateHUD("TARGET: " + found.toUpperCase(), "cyan");
+            } else {
+                smartSpeak("Unknown object");
+            }
+        }
+
+        function toggleVoiceSearch() {
+            if (!recognition) return alert("No Voice Support");
+            
+            if (isListening) { 
+                // Manual STOP -> Reset to Safety
+                recognition.stop(); 
+                resetToSafetyMode();
+            } else { 
+                try { 
+                    recognition.start(); 
+                } catch(e) { console.log(e); } 
+            }
+        }
+
+        function resetToSafetyMode() {
+            targetObject = null;
+            document.getElementById('val-target').innerText = "ANY HAZARD";
+            updateHUD("SAFETY MODE", "#0f0");
+            smartSpeak("Safety mode");
+        }
+
+        // --- TRAINER ---
+        async function startEdgeTraining() {
+            const btn = document.getElementById('train-btn');
+            btn.disabled = true; btn.innerText = "CALCULATING...";
+            const logBox = document.getElementById('training-log');
+            logBox.innerText = "> Simulating Velocity Scenarios...\n";
+            
+            const episodes = policy.episodes;
+            
+            for(let i=0; i<=episodes; i++) {
+                if(i % 5 === 0) await new Promise(r => setTimeout(r, 10));
+                const simVel = Math.random(); 
+                const simDist = Math.random();
+                const risk = simDist + (simVel * policy.sensitivity);
+                const progress = (i / episodes) * 100;
+                document.getElementById('progress-bar').style.width = progress + "%";
+                if(i % 10 === 0) logBox.innerText = `> Ep ${i} | Vel: ${simVel.toFixed(2)} | Risk: ${risk.toFixed(2)}\n` + logBox.innerText;
+            }
+            logBox.innerText = `> OPTIMIZATION COMPLETE.\n> Sensitivity Tuned: ${policy.sensitivity}\n` + logBox.innerText;
+            btn.disabled = false; btn.innerText = "OPTIMIZE POLICY";
+            setTimeout(() => { alert("Policy Updated."); switchTab('camera'); }, 500);
+        }
+
+        // --- UTILS ---
+        function switchTab(tabId) {
+            document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
+            document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+            if(tabId === 'camera') {
+                document.getElementById('camera-view-container').classList.add('active');
+                document.querySelectorAll('.tab')[0].classList.add('active');
+            } else {
+                document.getElementById('trainer-view').classList.add('active');
+                document.querySelectorAll('.tab')[1].classList.add('active');
+            }
+        }
+
+        function updateStats(dist, vel, ttc, cls) {
+            document.getElementById('val-dist').innerText = dist.toFixed(3);
+            document.getElementById('val-vel').innerText = vel.toFixed(3);
+            document.getElementById('val-ttc').innerText = ttc;
+            const clsEl = document.getElementById('val-cls');
+            if(clsEl) clsEl.innerText = cls.toUpperCase();
+            
+            const riskLabel = document.getElementById('hud-risk');
+            if(vel > 0.3) { riskLabel.innerText = "HIGH VELOCITY"; riskLabel.style.color = "red"; }
+            else if (dist > 0.4) { riskLabel.innerText = "PROXIMITY"; riskLabel.style.color = "red"; }
+            else { riskLabel.innerText = "SAFE"; riskLabel.style.color = "cyan"; }
+        }
+
+        function updateParam(key, val) {
+            policy[key] = parseFloat(val);
+            if(key === 'speed') document.getElementById('val-speed').innerText = val;
+            if(key === 'buffer') document.getElementById('val-buffer').innerText = val + " m";
+            if(key === 'priority') document.getElementById('val-priority').innerText = val;
+            if(key === 'epochs') document.getElementById('val-epochs').innerText = val;
+        }
+
+        function toggleContrast() {
+            highContrast = !highContrast;
+            document.body.style.filter = highContrast ? "invert(1) contrast(1.2)" : "none";
+        }
+
+        function updateHUD(text, color) {
+            const el = document.getElementById('main-alert');
+            el.innerText = text; el.style.color = color;
+            document.getElementById('hud').style.borderColor = color;
+        }
+
+        function toggleTorch() { if(!streamTrack) return; torchEnabled = !torchEnabled; try { streamTrack.applyConstraints({advanced: [{torch: torchEnabled}]}); } catch(e){} }
+        function toggleSonar() { sonarEnabled = !sonarEnabled; document.getElementById('btn-sonar').classList.toggle('active'); }
+
+    </script>
+</body>
+</html>
